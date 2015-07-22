@@ -1,46 +1,71 @@
-/* (1) use log(..) to print output (both sync and async) to the right hand side.
- * (2) use reset(..) from your own code to reset the output area.
- * (3) CMD+S to share a link to your code. */
+/**
+ * Welcome to CSP in JS!
+ *
+ * This is an implementation of Go-style coroutines that access a hidden,
+ * shared channel for putting data into, and taking it out of, a system.
+ *
+ * Channels, in this case, can be a set (for unique values), an array
+ * (as a stack or a queue), or even some kind of persistent data structure.
+ *
+ * CSP (especially in functional platforms like ClojureScript, where the
+ * `core.async` library provides asynchronous, immutable data-structures)
+ * typically operates through two operations:
+ *
+ * (1) put(x) : put x into the channel
+ * (2) take() : take one item from the channel
+ *
+ * This implementation uses ES6 generators (and other ES6 features), which are basically functions that
+ * can return more than one value, and pause after each value yielded.
+ *
+ * If you want a quick way to get near instantaneous feedback as you type/edit, copy the code
+ * over to the Arbiter code playground, which compiles ES6 into ES5 and runs it live:
+ *
+ * (*) matthiasak.github.io/Arbiter/
+ *
+ */
+
+// let log = (...args) => console.log(args.length ? args : args[0])
 
 let channel = () => {
     let c = [],
-        done = false
+        channel_closed = false,
+        actors = [],
+        without = (c, name, val) => c.filter((a) => a[name] !== val),
+        each = (c, fn) => c.forEach(fn)
 
-    const putter = (val) => {
+    const put = (val) => {
             if(typeof val === 'undefined') return ["park", null]
             c.unshift(val)
             return ["continue", null]
         },
-        taker = () => {
+        take = () => {
             let val = c.pop()
-            return [ val ? 'continue' : 'park', val ]
+            return [ val !== undefined ? 'continue' : 'park', val ]
         },
-        consume = function(taker_or_putter, gen){
-            var iter = gen(taker_or_putter),
-                actor = go(iter, iter.next())
-            actor.next()
-            return actor
-        },
-        go = function* (iter, step) {
-            while (!step.done && !done) {
-                let [state, value] = step.value
-                step = iter.next(value)
-                switch (state) {
-                    case "park": yield; break;
-                    case "continue": break;
+        spawn = function(gen){
+            let iter = gen(put, take)
+
+            let actor = () => {
+                let step = iter.next()
+                if(step.done || channel_closed) return
+                let [state, value] = step.value || ['park']
+                if(state === 'park'){
+                    setTimeout(() => each(without(actors, 'id', actor.id), (a) => a() ))
+                } else if(state === "continue"){
+                    setTimeout(actor)
                 }
             }
+
+            actor.id = Math.random()
+            actors.push(actor)
+
+            actor()
         }
 
     return {
-        put: function(gen){
-            let actor = consume(putter, gen)
-        },
-        take: function(gen){
-            let actor = consume(taker, gen)
-        },
+        spawn,
         close: () => {
-            done = true
+            channel_closed = true
         }
     }
 }
@@ -48,28 +73,41 @@ let channel = () => {
 /**
 API
 
-channel.put()
-channel.take()
+channel.spawn()
 channel.close()
 **/
 
-let x = channel()
 
-x.put( function* (putter) {
+let x = channel() // create new channel()
+
+// for any value in the channel, pull it and log it
+x.spawn( function* (put, take) {
+    while(true){
+        let val = take()
+        if(val[1]) log(`-------------------taking: ${val[1]}`)
+        yield // pause!
+    }
+})
+
+// put each item in fibonnaci sequence, one at a time
+x.spawn( function* (put, take) {
     let [x, y] = [0, 1],
         next = x+y
 
-    for(var i = 0; i < 100; i++){
+    for(var i = 0; i < 100; i++) {
         next = x+y
-        yield putter(next)
+        log(`putting: ${next}`)
+        yield put(next)
+        yield // pause!
         x = y
         y = next
     }
 })
 
-x.take( function* (taker) {
-    while(true){
-        var val = yield taker()
-        log(val)
-    }
-})
+// immediately, and every .5 seconds, put the date/time into channel
+function* insertDate(p, t) { yield p(new Date); yield p() }
+setInterval(() => x.spawn(insertDate), 100)
+x.spawn(insertDate)
+
+// close the channel and remove all memory references. Pow! one-line cleanup.
+setTimeout(() => x.close(), 4000)
